@@ -266,8 +266,13 @@ function MarketDetail({ market, wallet, onBack, onBetRecorded, onEdit, onDelete 
   const handleDelete = async () => {
     if (!window.confirm("Delete this market? This can't be undone.")) return;
     setDeleting(true);
-    await onDelete(market.id);
-    setDeleting(false);
+    try {
+      await onDelete(market.id);
+    } catch (err) {
+      setErrorMsg(err?.message || "Couldn't delete this market.");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -426,13 +431,28 @@ function MarketFormModal({ onClose, onSubmit, initial, mode = "create" }) {
   const [closes, setCloses] = useState(initial?.closes ? initial.closes.slice(0, 16) : "");
   const [category, setCategory] = useState(initial?.category || "Friends");
   const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [slowNotice, setSlowNotice] = useState(false);
 
   const submit = async () => {
     if (!title || !closes) return;
     setSaving(true);
-    await onSubmit({ title, rule, closes, category });
-    setSaving(false);
-    onClose();
+    setErrorMsg("");
+    setSlowNotice(false);
+    // Render's free tier can take up to a minute to wake a sleeping
+    // instance. Let the person know rather than leaving them staring
+    // at a spinner with no explanation.
+    const slowTimer = setTimeout(() => setSlowNotice(true), 6000);
+    try {
+      await onSubmit({ title, rule, closes, category });
+      onClose();
+    } catch (err) {
+      setErrorMsg(err?.message || "Something went wrong saving this market. Check that the backend is reachable.");
+    } finally {
+      clearTimeout(slowTimer);
+      setSaving(false);
+      setSlowNotice(false);
+    }
   };
 
   return (
@@ -468,6 +488,16 @@ function MarketFormModal({ onClose, onSubmit, initial, mode = "create" }) {
             </div>
           </div>
         </div>
+        {slowNotice && (
+          <p className="text-[12px] mt-4 flex items-center gap-1.5" style={{ color: COLOR.muted }}>
+            <AlertCircle size={13} /> Still working, the backend can take up to a minute to wake up if it's been idle.
+          </p>
+        )}
+        {errorMsg && (
+          <p className="text-[12px] mt-4 flex items-center gap-1.5" style={{ color: "#C0392B" }}>
+            <AlertCircle size={13} /> {errorMsg}
+          </p>
+        )}
         <button onClick={submit} disabled={saving} className="w-full mt-6 rounded-2xl py-3 font-semibold transition-transform hover:scale-[1.01] disabled:opacity-60"
           style={{ background: COLOR.mint, color: COLOR.navy, border: `2px solid ${COLOR.border}` }}>
           {saving ? "Saving..." : mode === "edit" ? "Save changes" : "Publish market"}
@@ -510,6 +540,10 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title, rule, category, closes, creatorAddress: wallet.address }),
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Backend returned ${res.status}`);
+    }
     const market = await res.json();
     setMarkets((prev) => [market, ...prev]);
   };
@@ -522,8 +556,7 @@ export default function App() {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err.error || "Couldn't save changes.");
-      return;
+      throw new Error(err.error || `Backend returned ${res.status}`);
     }
     const updated = await res.json();
     setMarkets((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
@@ -538,8 +571,7 @@ export default function App() {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      alert(err.error || "Couldn't delete this market.");
-      return;
+      throw new Error(err.error || `Backend returned ${res.status}`);
     }
     setMarkets((prev) => prev.filter((m) => m.id !== marketId));
     setActiveMarket(null);
