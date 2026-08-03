@@ -1,0 +1,14 @@
+[project]
+name = "verdict"
+description = "Verdict prediction market contracts"
+authors = []
+telemetry = false
+cache_dir = ".cache"
+
+[contracts.market-pool]
+path = "contracts/market-pool.clar"
+clarity_version = 2
+epoch = 2.4
+
+[repl.analysis]
+passes = ["check_checker"]
