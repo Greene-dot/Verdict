@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import * as THREE from "three";
 import {
   Wallet, Clock, Flame, Trophy, User, ChevronLeft,
-  ShieldCheck, Search, Plus, AlertCircle, X, Radio
+  ShieldCheck, Search, Plus, AlertCircle, X, Radio, Pencil, Trash2
 } from "lucide-react";
 import {
   connectWallet, signOut, isSignedIn, getUserAddress,
@@ -212,12 +212,15 @@ function MarketCard({ market, onOpen, index }) {
   );
 }
 
-function MarketDetail({ market, wallet, onBack, onBetRecorded }) {
+function MarketDetail({ market, wallet, onBack, onBetRecorded, onEdit, onDelete }) {
   const [side, setSide] = useState("yes");
   const [amount, setAmount] = useState(25);
   const [placing, setPlacing] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const isOwner = wallet.connected && wallet.address === market.creatorAddress;
+  const hasStakes = market.yesPool > 0 || market.noPool > 0;
 
   const total = market.yesPool + market.noPool || 1;
   const yesPercent = Math.round((market.yesPool / total) * 100);
@@ -260,11 +263,42 @@ function MarketDetail({ market, wallet, onBack, onBetRecorded }) {
     });
   };
 
+  const handleDelete = async () => {
+    if (!window.confirm("Delete this market? This can't be undone.")) return;
+    setDeleting(true);
+    await onDelete(market.id);
+    setDeleting(false);
+  };
+
   return (
     <div className="max-w-3xl mx-auto">
-      <button onClick={onBack} className="flex items-center gap-1 text-sm mb-6 hover:opacity-70" style={{ color: COLOR.muted }}>
-        <ChevronLeft size={16} /> Back to feed
-      </button>
+      <div className="flex items-center justify-between mb-6">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm hover:opacity-70" style={{ color: COLOR.muted }}>
+          <ChevronLeft size={16} /> Back to feed
+        </button>
+        {isOwner && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onEdit}
+              disabled={hasStakes}
+              title={hasStakes ? "Can't edit once a market has bets" : "Edit market"}
+              className="flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ border: `2px solid ${COLOR.border}`, color: COLOR.navy, background: COLOR.card }}
+            >
+              <Pencil size={12} /> Edit
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={hasStakes || deleting}
+              title={hasStakes ? "Can't delete once a market has bets" : "Delete market"}
+              className="flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ border: "2px solid #C0392B", color: "#C0392B", background: COLOR.card }}
+            >
+              <Trash2 size={12} /> {deleting ? "Deleting..." : "Delete"}
+            </button>
+          </div>
+        )}
+      </div>
       <div className="rounded-3xl overflow-hidden" style={{ background: COLOR.card, border: `2.5px solid ${COLOR.border}` }}>
         <div style={{ background: "#F3F0FB" }}><VerdictOrb yesPercent={yesPercent} /></div>
         <div className="p-6" style={{ borderTop: "2px solid #EFEAF9" }}>
@@ -276,6 +310,11 @@ function MarketDetail({ market, wallet, onBack, onBetRecorded }) {
           </div>
           <h2 className="text-xl font-semibold mb-3 leading-snug" style={{ color: COLOR.navy }}>{market.title}</h2>
           <p className="text-sm leading-relaxed mb-6" style={{ color: COLOR.muted }}>{market.rule}</p>
+          {hasStakes && isOwner && (
+            <p className="text-[12px] mb-4 flex items-center gap-1.5" style={{ color: COLOR.muted }}>
+              <AlertCircle size={13} /> This market already has bets against it, so it's locked from edits and deletion.
+            </p>
+          )}
 
           <div className="grid grid-cols-2 gap-3 mb-6">
             <button onClick={() => setSide("yes")} className="rounded-2xl p-4 text-left transition-all"
@@ -381,19 +420,26 @@ function Profile({ wallet, bets, markets }) {
   );
 }
 
-function CreateMarketModal({ onClose, onCreate }) {
-  const [title, setTitle] = useState("");
-  const [rule, setRule] = useState("");
-  const [closes, setCloses] = useState("");
-  const [category, setCategory] = useState("Friends");
+function MarketFormModal({ onClose, onSubmit, initial, mode = "create" }) {
+  const [title, setTitle] = useState(initial?.title || "");
+  const [rule, setRule] = useState(initial?.rule || "");
+  const [closes, setCloses] = useState(initial?.closes ? initial.closes.slice(0, 16) : "");
+  const [category, setCategory] = useState(initial?.category || "Friends");
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => { if (!title || !closes) return; onCreate({ title, rule, closes, category }); onClose(); };
+  const submit = async () => {
+    if (!title || !closes) return;
+    setSaving(true);
+    await onSubmit({ title, rule, closes, category });
+    setSaving(false);
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center p-4 z-30">
       <div className="w-full max-w-md rounded-2xl p-6" style={{ background: COLOR.card, border: `2.5px solid ${COLOR.border}` }}>
         <div className="flex items-center justify-between mb-5">
-          <h3 className="font-semibold" style={{ color: COLOR.navy }}>New market</h3>
+          <h3 className="font-semibold" style={{ color: COLOR.navy }}>{mode === "edit" ? "Edit market" : "New market"}</h3>
           <button onClick={onClose} style={{ color: COLOR.muted }}><X size={18} /></button>
         </div>
         <div className="space-y-4">
@@ -422,9 +468,9 @@ function CreateMarketModal({ onClose, onCreate }) {
             </div>
           </div>
         </div>
-        <button onClick={submit} className="w-full mt-6 rounded-2xl py-3 font-semibold transition-transform hover:scale-[1.01]"
+        <button onClick={submit} disabled={saving} className="w-full mt-6 rounded-2xl py-3 font-semibold transition-transform hover:scale-[1.01] disabled:opacity-60"
           style={{ background: COLOR.mint, color: COLOR.navy, border: `2px solid ${COLOR.border}` }}>
-          Publish market
+          {saving ? "Saving..." : mode === "edit" ? "Save changes" : "Publish market"}
         </button>
       </div>
     </div>
@@ -437,6 +483,7 @@ export default function App() {
   const [activeMarket, setActiveMarket] = useState(null);
   const [category, setCategory] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
+  const [editingMarket, setEditingMarket] = useState(null);
   const [bets, setBets] = useState({});
   const [leaderboard, setLeaderboard] = useState([]);
   const [wallet, setWallet] = useState({ connected: false, address: "" });
@@ -465,6 +512,37 @@ export default function App() {
     });
     const market = await res.json();
     setMarkets((prev) => [market, ...prev]);
+  };
+
+  const editMarket = async ({ title, rule, closes, category }) => {
+    const res = await fetch(`${API_BASE}/api/markets/${editingMarket.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, rule, category, closes, editorAddress: wallet.address }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || "Couldn't save changes.");
+      return;
+    }
+    const updated = await res.json();
+    setMarkets((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+    setActiveMarket(updated);
+  };
+
+  const deleteMarket = async (marketId) => {
+    const res = await fetch(`${API_BASE}/api/markets/${marketId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ editorAddress: wallet.address }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || "Couldn't delete this market.");
+      return;
+    }
+    setMarkets((prev) => prev.filter((m) => m.id !== marketId));
+    setActiveMarket(null);
   };
 
   const filtered = category === "All" ? markets : markets.filter((m) => m.category === category);
@@ -514,7 +592,14 @@ export default function App() {
         )}
 
         {activeMarket && (
-          <MarketDetail market={markets.find((m) => m.id === activeMarket.id) || activeMarket} wallet={wallet} onBack={() => setActiveMarket(null)} onBetRecorded={handleBetRecorded} />
+          <MarketDetail
+            market={markets.find((m) => m.id === activeMarket.id) || activeMarket}
+            wallet={wallet}
+            onBack={() => setActiveMarket(null)}
+            onBetRecorded={handleBetRecorded}
+            onEdit={() => setEditingMarket(markets.find((m) => m.id === activeMarket.id) || activeMarket)}
+            onDelete={deleteMarket}
+          />
         )}
 
         {view === "leaderboard" && !activeMarket && <Leaderboard entries={leaderboard} />}
@@ -529,7 +614,15 @@ export default function App() {
         ))}
       </nav>
 
-      {showCreate && <CreateMarketModal onClose={() => setShowCreate(false)} onCreate={createMarket} />}
+      {showCreate && <MarketFormModal mode="create" onClose={() => setShowCreate(false)} onSubmit={createMarket} />}
+      {editingMarket && (
+        <MarketFormModal
+          mode="edit"
+          initial={editingMarket}
+          onClose={() => setEditingMarket(null)}
+          onSubmit={editMarket}
+        />
+      )}
     </div>
   );
 }
