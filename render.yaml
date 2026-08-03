@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: verdict-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 3001
