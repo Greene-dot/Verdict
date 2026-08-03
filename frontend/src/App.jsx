@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import * as THREE from "three";
 import {
   Wallet, Clock, Flame, Trophy, User, ChevronLeft,
-  ShieldCheck, Search, Plus, AlertCircle, X, Radio,
-  Trash2, Pencil, Loader2, CheckCircle2
+  ShieldCheck, Search, Plus, AlertCircle, X, Radio
 } from "lucide-react";
 
 /* ---------------------------------------------------------
@@ -40,87 +39,53 @@ const COLOR = {
 };
 
 const CATEGORIES = ["All", "Friends", "Influencers", "Rapid"];
-const STORAGE_KEY = "verdict:state";
 
-/* ---------------------------------------------------------
-   Local, timezone safe date helpers. Everything below reads
-   and writes plain "YYYY-MM-DDTHH:MM[:SS]" strings in the
-   viewer's own local time, so a close date typed in never
-   drifts across a UTC round trip. That drift was the source
-   of markets reading "closed" the moment they were created.
---------------------------------------------------------- */
-function pad(n) {
-  return String(n).padStart(2, "0");
-}
-function toLocalInputValue(date) {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-function toLocalStamp(date) {
-  return `${toLocalInputValue(date)}:${pad(date.getSeconds())}`;
-}
-function isClosed(closes) {
-  const t = new Date(closes).getTime();
-  return Number.isFinite(t) ? t <= Date.now() : false;
-}
-function isRapid(closes) {
-  const diff = new Date(closes).getTime() - Date.now();
-  return diff > 0 && diff < 1000 * 60 * 60 * 24;
-}
-
-/* Demo markets are seeded relative to whenever the app first
-   loads, so they always start in the future instead of going
-   stale the moment real time catches up to a hardcoded date. */
-function seedMarkets() {
-  const now = Date.now();
-  const inHours = (h) => toLocalStamp(new Date(now + h * 3600000));
-  const inDays = (d) => toLocalStamp(new Date(now + d * 86400000));
-  return [
-    {
-      id: "m1",
-      category: "Influencers",
-      title: "Do Tolu and Kemzy make it past their anniversary post?",
-      rule: "Resolves YES if both accounts remain mutually following and no breakup statement is posted by either party before the close date.",
-      closes: inDays(11),
-      rapid: false,
-      yesPool: 4820,
-      noPool: 3110,
-      participants: 214,
-    },
-    {
-      id: "m2",
-      category: "Rapid",
-      title: "Will Zandyor address the group chat leak live tonight?",
-      rule: "Resolves YES if a public statement is made on stream within the window.",
-      closes: inHours(6),
-      rapid: true,
-      yesPool: 1920,
-      noPool: 2760,
-      participants: 88,
-    },
-    {
-      id: "m3",
-      category: "Friends",
-      title: "Are Dara and Bisi still roommates by move out season?",
-      rule: "Resolves YES if both remain listed on the same lease as of the close date, confirmed by either party.",
-      closes: inDays(29),
-      rapid: false,
-      yesPool: 990,
-      noPool: 1410,
-      participants: 63,
-    },
-    {
-      id: "m4",
-      category: "Influencers",
-      title: "Does the podcast duo announce a solo split this quarter?",
-      rule: "Resolves YES if either host confirms departure from the shared show before the close date.",
-      closes: inDays(58),
-      rapid: false,
-      yesPool: 3040,
-      noPool: 3980,
-      participants: 176,
-    },
-  ];
-}
+const INITIAL_MARKETS = [
+  {
+    id: "m1",
+    category: "Influencers",
+    title: "Do Tolu and Kemzy make it past their anniversary post?",
+    rule: "Resolves YES if both accounts remain mutually following and no breakup statement is posted by either party before the close date.",
+    closes: "2026-08-14",
+    rapid: false,
+    yesPool: 4820,
+    noPool: 3110,
+    participants: 214,
+  },
+  {
+    id: "m2",
+    category: "Rapid",
+    title: "Will Zandyor address the group chat leak live tonight?",
+    rule: "Resolves YES if a public statement is made on stream within the window.",
+    closes: "2026-08-03T20:30:00",
+    rapid: true,
+    yesPool: 1920,
+    noPool: 2760,
+    participants: 88,
+  },
+  {
+    id: "m3",
+    category: "Friends",
+    title: "Are Dara and Bisi still roommates by move out season?",
+    rule: "Resolves YES if both remain listed on the same lease as of the close date, confirmed by either party.",
+    closes: "2026-09-01",
+    rapid: false,
+    yesPool: 990,
+    noPool: 1410,
+    participants: 63,
+  },
+  {
+    id: "m4",
+    category: "Influencers",
+    title: "Does the podcast duo announce a solo split this quarter?",
+    rule: "Resolves YES if either host confirms departure from the shared show before the close date.",
+    closes: "2026-09-30",
+    rapid: false,
+    yesPool: 3040,
+    noPool: 3980,
+    participants: 176,
+  },
+];
 
 const LEADERBOARD = [
   { rank: 1, name: "zandyor.btc", winRate: 78, volume: 12400 },
@@ -128,8 +93,6 @@ const LEADERBOARD = [
   { rank: 3, name: "adaeze.btc", winRate: 69, volume: 8850 },
   { rank: 4, name: "bstacks.btc", winRate: 64, volume: 7200 },
 ];
-
-const DEFAULT_WALLET = { connected: false, address: "", balance: 0, mode: "" };
 
 const fmt = (n) => n.toLocaleString("en-US");
 
@@ -246,12 +209,10 @@ function useCountdown(closes) {
   useEffect(() => {
     const tick = () => {
       const diff = new Date(closes).getTime() - Date.now();
-      if (!Number.isFinite(diff) || diff <= 0) return setLabel("closed");
-      const d = Math.floor(diff / 86400000);
-      const h = Math.floor((diff % 86400000) / 3600000);
+      if (diff <= 0) return setLabel("closed");
+      const h = Math.floor(diff / 3600000);
       const m = Math.floor((diff % 3600000) / 60000);
       const s = Math.floor((diff % 60000) / 1000);
-      if (d > 0) return setLabel(`${d}d ${h}h`);
       setLabel(h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`);
     };
     tick();
@@ -378,13 +339,11 @@ function WalletButton({ wallet, onConnect, onDisconnect }) {
 /* ---------------------------------------------------------
    Market card.
 --------------------------------------------------------- */
-function MarketCard({ market, onOpen, onDelete, onEditDate, index }) {
+function MarketCard({ market, onOpen, index }) {
   const [ref, visible] = useReveal();
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const total = market.yesPool + market.noPool;
   const yesPercent = Math.round((market.yesPool / total) * 100);
   const countdown = useCountdown(market.closes);
-  const closed = countdown === "closed";
 
   return (
     <div
@@ -406,50 +365,15 @@ function MarketCard({ market, onOpen, onDelete, onEditDate, index }) {
         >
           {market.category}
         </span>
-        <div className="flex items-center gap-2">
-          {closed ? (
-            <span className="text-[11px] font-mono font-semibold" style={{ color: "#B0433F" }}>
-              closed
-            </span>
-          ) : market.rapid ? (
-            <span className="flex items-center gap-1 text-[11px] font-mono font-medium" style={{ color: "#B8860B" }}>
-              <Flame size={12} /> {countdown}
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-[11px] font-mono" style={{ color: COLOR.muted }}>
-              <Clock size={12} /> closes {market.closes.slice(0, 10)}
-            </span>
-          )}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onEditDate(market);
-            }}
-            title="Edit close date"
-            className="opacity-0 group-hover:opacity-100 transition-opacity rounded-full p-1"
-            style={{ color: COLOR.muted }}
-          >
-            <Pencil size={13} />
-          </button>
-          {closed && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (confirmingDelete) {
-                  onDelete(market.id);
-                } else {
-                  setConfirmingDelete(true);
-                  setTimeout(() => setConfirmingDelete(false), 2500);
-                }
-              }}
-              title={confirmingDelete ? "Tap again to confirm" : "Delete closed market"}
-              className="rounded-full p-1 transition-colors"
-              style={{ color: confirmingDelete ? "#B0433F" : COLOR.muted }}
-            >
-              <Trash2 size={13} />
-            </button>
-          )}
-        </div>
+        {market.rapid ? (
+          <span className="flex items-center gap-1 text-[11px] font-mono font-medium" style={{ color: "#B8860B" }}>
+            <Flame size={12} /> {countdown}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-[11px] font-mono" style={{ color: COLOR.muted }}>
+            <Clock size={12} /> closes {market.closes.slice(0, 10)}
+          </span>
+        )}
       </div>
 
       <h3 className="text-[15px] leading-snug font-semibold mb-4" style={{ color: COLOR.navy }}>
@@ -470,11 +394,6 @@ function MarketCard({ market, onOpen, onDelete, onEditDate, index }) {
         <span>{market.participants} predictors</span>
         <span>{fmt(total)} sBTC pooled</span>
       </div>
-      {confirmingDelete && (
-        <div className="mt-2 text-[11px] font-medium" style={{ color: "#B0433F" }}>
-          Tap the trash icon again to delete this market for good.
-        </div>
-      )}
     </div>
   );
 }
@@ -491,10 +410,9 @@ function MarketDetail({ market, wallet, onBack, onBet }) {
   const total = market.yesPool + market.noPool;
   const yesPercent = Math.round((market.yesPool / total) * 100);
   const countdown = useCountdown(market.closes);
-  const closed = countdown === "closed";
 
   const handlePlace = () => {
-    if (!wallet.connected || closed) return;
+    if (!wallet.connected) return;
     setPlacing(true);
     setTimeout(() => {
       setPlacing(false);
@@ -527,17 +445,9 @@ function MarketDetail({ market, wallet, onBack, onBet }) {
             <span className="text-[11px] uppercase tracking-wider font-semibold" style={{ color: COLOR.violet }}>
               {market.category}
             </span>
-            {closed ? (
-              <span className="text-[12px] font-mono font-semibold" style={{ color: "#B0433F" }}>
-                closed
-              </span>
-            ) : market.rapid ? (
+            {market.rapid && (
               <span className="flex items-center gap-1 text-[12px] font-mono font-medium" style={{ color: "#B8860B" }}>
                 <Flame size={13} /> closes in {countdown}
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-[12px] font-mono" style={{ color: COLOR.muted }}>
-                <Clock size={13} /> closes in {countdown}
               </span>
             )}
           </div>
@@ -593,12 +503,7 @@ function MarketDetail({ market, wallet, onBack, onBet }) {
             />
           </div>
 
-          {closed && (
-            <div className="flex items-center gap-2 text-[13px] mb-4" style={{ color: "#B0433F" }}>
-              <AlertCircle size={15} /> This market is closed. Edit its close date from the feed to reopen it.
-            </div>
-          )}
-          {!closed && !wallet.connected && (
+          {!wallet.connected && (
             <div className="flex items-center gap-2 text-[13px] mb-4" style={{ color: "#B8860B" }}>
               <AlertCircle size={15} /> Connect a wallet to place this bet.
             </div>
@@ -606,7 +511,7 @@ function MarketDetail({ market, wallet, onBack, onBet }) {
 
           <button
             onClick={handlePlace}
-            disabled={!wallet.connected || placing || closed}
+            disabled={!wallet.connected || placing}
             className="w-full rounded-2xl py-3.5 font-semibold transition-transform hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ background: COLOR.mint, color: COLOR.navy, border: `2px solid ${COLOR.border}` }}
           >
@@ -669,12 +574,10 @@ function Profile({ wallet, bets, markets }) {
     );
   }
 
-  const myBets = Object.entries(bets)
-    .map(([marketId, b]) => ({
-      market: markets.find((m) => m.id === marketId),
-      ...b,
-    }))
-    .filter((b) => b.market);
+  const myBets = Object.entries(bets).map(([marketId, b]) => ({
+    market: markets.find((m) => m.id === marketId),
+    ...b,
+  }));
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -734,18 +637,10 @@ function CreateMarketModal({ onClose, onCreate }) {
   const [rule, setRule] = useState("");
   const [closes, setCloses] = useState("");
   const [category, setCategory] = useState("Friends");
-  const [error, setError] = useState("");
-
-  const minValue = toLocalInputValue(new Date());
 
   const submit = () => {
-    if (!title.trim()) return setError("Give the market a question first.");
-    if (!closes) return setError("Pick when this market closes.");
-    if (new Date(closes).getTime() <= Date.now()) {
-      return setError("Closing time has to be in the future.");
-    }
-    setError("");
-    onCreate({ title: title.trim(), rule: rule.trim(), closes, category });
+    if (!title || !closes) return;
+    onCreate({ title, rule, closes, category });
     onClose();
   };
 
@@ -802,18 +697,12 @@ function CreateMarketModal({ onClose, onCreate }) {
               <input
                 type="datetime-local"
                 value={closes}
-                min={minValue}
                 onChange={(e) => setCloses(e.target.value)}
                 className="w-full mt-1 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
                 style={{ background: "#F6F3FC", border: "2px solid #E3DEF2", color: COLOR.navy }}
               />
             </div>
           </div>
-          {error && (
-            <div className="flex items-center gap-2 text-[12px]" style={{ color: "#B0433F" }}>
-              <AlertCircle size={14} /> {error}
-            </div>
-          )}
         </div>
         <button
           onClick={submit}
@@ -827,154 +716,23 @@ function CreateMarketModal({ onClose, onCreate }) {
   );
 }
 
-function EditCloseDateModal({ market, onClose, onSave }) {
-  const [closes, setCloses] = useState(market.closes.slice(0, 16));
-  const [error, setError] = useState("");
-  const minValue = toLocalInputValue(new Date());
-
-  const submit = () => {
-    if (!closes) return setError("Pick a new close date.");
-    if (new Date(closes).getTime() <= Date.now()) {
-      return setError("New closing time has to be in the future.");
-    }
-    setError("");
-    onSave(market.id, closes);
-    onClose();
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center p-4 z-30">
-      <div
-        className="w-full max-w-sm rounded-2xl p-6"
-        style={{ background: COLOR.card, border: `2.5px solid ${COLOR.border}` }}
-      >
-        <div className="flex items-center justify-between mb-5">
-          <h3 className="font-semibold" style={{ color: COLOR.navy }}>Edit close date</h3>
-          <button onClick={onClose} style={{ color: COLOR.muted }}>
-            <X size={18} />
-          </button>
-        </div>
-        <p className="text-[13px] mb-4 leading-snug" style={{ color: COLOR.muted }}>
-          {market.title}
-        </p>
-        <label className="text-[12px]" style={{ color: COLOR.muted }}>New close date and time</label>
-        <input
-          type="datetime-local"
-          value={closes}
-          min={minValue}
-          onChange={(e) => setCloses(e.target.value)}
-          className="w-full mt-1 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
-          style={{ background: "#F6F3FC", border: "2px solid #E3DEF2", color: COLOR.navy }}
-        />
-        {error && (
-          <div className="flex items-center gap-2 mt-3 text-[12px]" style={{ color: "#B0433F" }}>
-            <AlertCircle size={14} /> {error}
-          </div>
-        )}
-        <button
-          onClick={submit}
-          className="w-full mt-6 rounded-2xl py-3 font-semibold transition-transform hover:scale-[1.01]"
-          style={{ background: COLOR.mint, color: COLOR.navy, border: `2px solid ${COLOR.border}` }}
-        >
-          Save close date
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SaveIndicator({ status }) {
-  if (status === "idle") return null;
-  return (
-    <div
-      className="fixed bottom-20 md:bottom-6 right-5 flex items-center gap-2 rounded-full px-3 py-2 text-[12px] font-medium z-20 shadow-md"
-      style={{ background: COLOR.card, border: `2px solid ${COLOR.border}`, color: COLOR.navy }}
-    >
-      {status === "saving" ? (
-        <>
-          <Loader2 size={13} className="animate-spin" /> Saving...
-        </>
-      ) : (
-        <>
-          <CheckCircle2 size={13} style={{ color: "#2F9E8F" }} /> Saved
-        </>
-      )}
-    </div>
-  );
-}
-
 export default function App() {
   useFonts();
 
-  const [markets, setMarkets] = useState([]);
+  const [markets, setMarkets] = useState(INITIAL_MARKETS);
   const [view, setView] = useState("feed");
-  const [activeMarketId, setActiveMarketId] = useState(null);
+  const [activeMarket, setActiveMarket] = useState(null);
   const [category, setCategory] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
-  const [editingMarket, setEditingMarket] = useState(null);
   const [bets, setBets] = useState({});
-  const [wallet, setWallet] = useState(DEFAULT_WALLET);
-  const [loaded, setLoaded] = useState(false);
-  const [saveStatus, setSaveStatus] = useState("idle");
-  const saveTimer = useRef(null);
-
-  /* Load persisted state once on mount. If nothing has been
-     saved yet, seed with fresh demo markets and write that
-     seed straight back to storage. */
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await window.storage.get(STORAGE_KEY, false);
-        if (!cancelled && res && res.value) {
-          const parsed = JSON.parse(res.value);
-          setMarkets(Array.isArray(parsed.markets) && parsed.markets.length ? parsed.markets : seedMarkets());
-          setBets(parsed.bets && typeof parsed.bets === "object" ? parsed.bets : {});
-          setWallet(parsed.wallet && parsed.wallet.connected ? parsed.wallet : DEFAULT_WALLET);
-        } else if (!cancelled) {
-          setMarkets(seedMarkets());
-        }
-      } catch (err) {
-        if (!cancelled) setMarkets(seedMarkets());
-      } finally {
-        if (!cancelled) setLoaded(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  /* Persist on every meaningful change, once the initial load
-     has completed so we never overwrite saved data with the
-     empty default state during the first render. */
-  useEffect(() => {
-    if (!loaded) return;
-    setSaveStatus("saving");
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await window.storage.set(
-          STORAGE_KEY,
-          JSON.stringify({ markets, bets, wallet }),
-          false
-        );
-        setSaveStatus("saved");
-        setTimeout(() => setSaveStatus("idle"), 1500);
-      } catch (err) {
-        setSaveStatus("idle");
-      }
-    }, 400);
-    return () => clearTimeout(saveTimer.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markets, bets, wallet, loaded]);
+  const [wallet, setWallet] = useState({ connected: false, address: "", balance: 0, mode: "" });
 
   const handleConnect = ({ address, mode }) => {
     setWallet({ connected: true, address, balance: mode === "demo" ? 1240 : 0, mode });
   };
-  const disconnect = () => setWallet(DEFAULT_WALLET);
+  const disconnect = () => setWallet({ connected: false, address: "", balance: 0, mode: "" });
 
-  const placeBet = useCallback((marketId, side, amount) => {
+  const placeBet = (marketId, side, amount) => {
     setMarkets((prev) =>
       prev.map((m) =>
         m.id === marketId
@@ -989,9 +747,9 @@ export default function App() {
     );
     setBets((prev) => ({ ...prev, [marketId]: { side, amount } }));
     setWallet((w) => ({ ...w, balance: w.balance - amount }));
-  }, []);
+  };
 
-  const createMarket = useCallback(({ title, rule, closes, category }) => {
+  const createMarket = ({ title, rule, closes, category }) => {
     const id = `m${Date.now()}`;
     setMarkets((prev) => [
       {
@@ -1000,38 +758,16 @@ export default function App() {
         title,
         rule: rule || "Resolution rule to be confirmed by the market creator.",
         closes,
-        rapid: isRapid(closes),
+        rapid: new Date(closes).getTime() - Date.now() < 1000 * 60 * 60 * 24,
         yesPool: 10,
         noPool: 10,
         participants: 1,
       },
       ...prev,
     ]);
-  }, []);
-
-  const deleteMarket = useCallback((marketId) => {
-    setMarkets((prev) => prev.filter((m) => m.id !== marketId));
-    setBets((prev) => {
-      if (!prev[marketId]) return prev;
-      const next = { ...prev };
-      delete next[marketId];
-      return next;
-    });
-    setActiveMarketId((id) => (id === marketId ? null : id));
-  }, []);
-
-  const editMarketClose = useCallback((marketId, newCloses) => {
-    setMarkets((prev) =>
-      prev.map((m) =>
-        m.id === marketId
-          ? { ...m, closes: newCloses, rapid: isRapid(newCloses) }
-          : m
-      )
-    );
-  }, []);
+  };
 
   const filtered = category === "All" ? markets : markets.filter((m) => m.category === category);
-  const activeMarket = markets.find((m) => m.id === activeMarketId) || null;
 
   return (
     <div
@@ -1058,7 +794,7 @@ export default function App() {
             ].map((n) => (
               <button
                 key={n.id}
-                onClick={() => { setView(n.id); setActiveMarketId(null); }}
+                onClick={() => { setView(n.id); setActiveMarket(null); }}
                 className="px-3 py-1.5 rounded-full text-[13px] transition-colors"
                 style={{
                   background: view === n.id ? "#E3DEF2" : "transparent",
@@ -1103,36 +839,19 @@ export default function App() {
                 </button>
               ))}
             </div>
-            {!loaded ? (
-              <div className="flex items-center gap-2 py-16 justify-center text-sm" style={{ color: COLOR.muted }}>
-                <Loader2 size={16} className="animate-spin" /> Loading markets...
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="text-center py-16 text-sm" style={{ color: COLOR.muted }}>
-                No markets in this category yet.
-              </div>
-            ) : (
-              <div className="grid sm:grid-cols-2 gap-4">
-                {filtered.map((m, i) => (
-                  <MarketCard
-                    key={m.id}
-                    market={m}
-                    index={i}
-                    onOpen={(mk) => setActiveMarketId(mk.id)}
-                    onDelete={deleteMarket}
-                    onEditDate={setEditingMarket}
-                  />
-                ))}
-              </div>
-            )}
+            <div className="grid sm:grid-cols-2 gap-4">
+              {filtered.map((m, i) => (
+                <MarketCard key={m.id} market={m} index={i} onOpen={setActiveMarket} />
+              ))}
+            </div>
           </>
         )}
 
         {activeMarket && (
           <MarketDetail
-            market={activeMarket}
+            market={markets.find((m) => m.id === activeMarket.id) || activeMarket}
             wallet={wallet}
-            onBack={() => setActiveMarketId(null)}
+            onBack={() => setActiveMarket(null)}
             onBet={placeBet}
           />
         )}
@@ -1152,7 +871,7 @@ export default function App() {
         ].map((n) => (
           <button
             key={n.id}
-            onClick={() => { setView(n.id); setActiveMarketId(null); }}
+            onClick={() => { setView(n.id); setActiveMarket(null); }}
             className="flex flex-col items-center gap-0.5 text-[11px]"
             style={{ color: view === n.id ? "#2F9E8F" : COLOR.muted }}
           >
@@ -1163,14 +882,6 @@ export default function App() {
       </nav>
 
       {showCreate && <CreateMarketModal onClose={() => setShowCreate(false)} onCreate={createMarket} />}
-      {editingMarket && (
-        <EditCloseDateModal
-          market={editingMarket}
-          onClose={() => setEditingMarket(null)}
-          onSave={editMarketClose}
-        />
-      )}
-      <SaveIndicator status={saveStatus} />
     </div>
   );
 }
