@@ -14,17 +14,66 @@
 
 const express = require("express");
 const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In memory store, replace with Supabase client calls.
-const db = {
-  markets: [],
-  bets: [],
-  disputes: [],
-};
+// File backed store. This survives normal restarts of a long running
+// process, but Render's free tier wipes the disk on redeploys and on
+// the periodic spin down that happens after inactivity. Treat this as
+// a bridge, not a real answer, swap it for Supabase calls (see
+// schema.sql) once you want data that survives a redeploy for sure.
+const DB_FILE = path.join(__dirname, "db.json");
+
+function loadDb() {
+  if (fs.existsSync(DB_FILE)) {
+    return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+  }
+  // Seed data so the feed isn't empty on a fresh deploy.
+  return {
+    markets: [
+      {
+        id: "m_seed_1",
+        title: "Will I eat this night",
+        rule: "Resolves YES if the creator posts proof of a meal before midnight in their timezone.",
+        category: "Friends",
+        closes: "2026-08-07T23:59:00",
+        creatorAddress: "SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR",
+        status: "open",
+        yesPool: 10,
+        noPool: 35,
+        participants: 2,
+        createdAt: new Date().toISOString(),
+        onChainTxId: null,
+      },
+      {
+        id: "m_seed_2",
+        title: "Do Tolu and Kemzy make it past their anniversary post?",
+        rule: "Resolves YES if both accounts remain mutually following and no breakup statement is posted by either party before the close date.",
+        category: "Influencers",
+        closes: "2026-08-14T00:00:00",
+        creatorAddress: "SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR",
+        status: "open",
+        yesPool: 4820,
+        noPool: 3110,
+        participants: 214,
+        createdAt: new Date().toISOString(),
+        onChainTxId: null,
+      },
+    ],
+    bets: [],
+    disputes: [],
+  };
+}
+
+const db = loadDb();
+
+function saveDb() {
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
 
 /* ---------------------------------------------------------
    Markets
@@ -61,6 +110,7 @@ app.post("/api/markets", (req, res) => {
     onChainTxId: null, // fill in once the factory contract call confirms
   };
   db.markets.push(market);
+  saveDb();
   res.status(201).json(market);
 });
 
@@ -70,6 +120,58 @@ app.get("/api/markets/:id", (req, res) => {
   if (!market) return res.status(404).json({ error: "market not found" });
   const marketBets = db.bets.filter((b) => b.marketId === market.id);
   res.json({ ...market, bets: marketBets });
+});
+
+// Edit a market. Only the original creator can edit, and only
+// while the market is still open, editing a market that already
+// has bets against it would be unfair to whoever already staked.
+app.patch("/api/markets/:id", (req, res) => {
+  const market = db.markets.find((m) => m.id === req.params.id);
+  if (!market) return res.status(404).json({ error: "market not found" });
+
+  const { editorAddress, title, rule, category, closes } = req.body;
+  if (!editorAddress) return res.status(400).json({ error: "editorAddress is required" });
+  if (editorAddress !== market.creatorAddress) {
+    return res.status(403).json({ error: "only the creator can edit this market" });
+  }
+  if (market.status !== "open") {
+    return res.status(400).json({ error: "only an open market can be edited" });
+  }
+  const hasBets = db.bets.some((b) => b.marketId === market.id);
+  if (hasBets) {
+    return res.status(400).json({ error: "this market already has bets against it and can no longer be edited" });
+  }
+
+  if (title) market.title = title;
+  if (rule !== undefined) market.rule = rule;
+  if (category) market.category = category;
+  if (closes) market.closes = closes;
+
+  saveDb();
+  res.json(market);
+});
+
+// Delete a market. Same guard rails as editing: creator only,
+// and only before anyone has staked on it. Once bets exist the
+// market should be cancelled through resolution instead, so
+// stakers get their funds back rather than the market vanishing.
+app.delete("/api/markets/:id", (req, res) => {
+  const market = db.markets.find((m) => m.id === req.params.id);
+  if (!market) return res.status(404).json({ error: "market not found" });
+
+  const { editorAddress } = req.body;
+  if (!editorAddress) return res.status(400).json({ error: "editorAddress is required" });
+  if (editorAddress !== market.creatorAddress) {
+    return res.status(403).json({ error: "only the creator can delete this market" });
+  }
+  const hasBets = db.bets.some((b) => b.marketId === market.id);
+  if (hasBets) {
+    return res.status(400).json({ error: "this market already has bets against it, cancel it instead of deleting" });
+  }
+
+  db.markets = db.markets.filter((m) => m.id !== market.id);
+  saveDb();
+  res.status(204).send();
 });
 
 /* ---------------------------------------------------------
@@ -105,6 +207,7 @@ app.post("/api/markets/:id/bets", (req, res) => {
   else market.noPool += amount;
   market.participants += 1;
 
+  saveDb();
   res.status(201).json(bet);
 });
 
@@ -132,6 +235,7 @@ app.post("/api/markets/:id/resolve", (req, res) => {
   market.resolvedAt = new Date().toISOString();
   market.disputeWindowCloses = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString();
 
+  saveDb();
   res.json(market);
 });
 
@@ -155,6 +259,7 @@ app.post("/api/markets/:id/dispute", (req, res) => {
   db.disputes.push(dispute);
   market.status = "disputed";
 
+  saveDb();
   res.status(201).json(dispute);
 });
 
