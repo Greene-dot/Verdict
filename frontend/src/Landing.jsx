@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Sparkles, Search, Wallet, ShieldCheck, ArrowRight, Flame,
-  Users, Coins, Mail, CheckCircle2, Radio, Link2
+  Users, Coins, Mail, CheckCircle2, Radio, Link2, Bot
 } from "lucide-react";
 
 const COLOR = {
@@ -131,6 +131,15 @@ export default function Landing({ markets, wallet, onEnterApp, onConnectWallet }
                   <Wallet size={15} /> Connect wallet
                 </button>
               )}
+              <a
+                href="https://t.me/VerdiictBot"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-full px-5 py-3 text-[14px] font-medium"
+                style={{ border: `2px solid ${COLOR.border}`, color: COLOR.navy, background: COLOR.card }}
+              >
+                <Bot size={15} /> Chat with the bot
+              </a>
             </div>
           </div>
 
