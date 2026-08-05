@@ -18,6 +18,20 @@ import { StacksTestnet, StacksMainnet } from "@stacks/network";
 export const NETWORK = new StacksTestnet();
 const IS_MAINNET = false;
 
+// Demo mode simulates a confirmed transaction instead of calling the
+// real contract, everything else about the flow, wallet connect,
+// backend recording, the feed updating, stays completely real.
+// Default is demo (safe for a live submission with an unverified
+// contract). Set VITE_DEMO_MODE=false in Vercel once the deployed
+// contract is confirmed working, no code changes needed after that.
+export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE !== "false";
+
+function simulateConfirmedTx({ onFinish }) {
+  setTimeout(() => {
+    onFinish({ txId: `demo_${Date.now().toString(16)}` });
+  }, 1200);
+}
+
 // Fill these in after `clarinet deployments generate` or a manual deploy.
 const CONTRACT_ADDRESS = "ST000000000000000000002AMW42H";
 const CONTRACT_NAME = "market-pool";
@@ -61,6 +75,7 @@ export function connectWallet({ onFinish, onCancel }) {
  * the sBTC contract calls are wired in, the shape stays the same.
  */
 export function placeBet({ side, amountMicroStx, onFinish, onCancel }) {
+  if (DEMO_MODE) return simulateConfirmedTx({ onFinish });
   return openContractCall({
     network: NETWORK,
     contractAddress: CONTRACT_ADDRESS,
@@ -76,6 +91,7 @@ export function placeBet({ side, amountMicroStx, onFinish, onCancel }) {
 // Admin only in practice, gate this behind your resolver check
 // before exposing any button that calls it.
 export function resolveMarket({ outcome, onFinish, onCancel }) {
+  if (DEMO_MODE) return simulateConfirmedTx({ onFinish });
   return openContractCall({
     network: NETWORK,
     contractAddress: CONTRACT_ADDRESS,
@@ -88,6 +104,7 @@ export function resolveMarket({ outcome, onFinish, onCancel }) {
 }
 
 export function claimPayout({ onFinish, onCancel }) {
+  if (DEMO_MODE) return simulateConfirmedTx({ onFinish });
   return openContractCall({
     network: NETWORK,
     contractAddress: CONTRACT_ADDRESS,
