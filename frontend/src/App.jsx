@@ -8,6 +8,7 @@ import {
   connectWallet, signOut, isSignedIn, getUserAddress,
   placeBet as placeBetOnChain,
 } from "./lib/stacks";
+import Landing from "./Landing";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001";
 
@@ -509,7 +510,7 @@ function MarketFormModal({ onClose, onSubmit, initial, mode = "create" }) {
 
 export default function App() {
   const [markets, setMarkets] = useState([]);
-  const [view, setView] = useState("feed");
+  const [view, setView] = useState("landing");
   const [activeMarket, setActiveMarket] = useState(null);
   const [category, setCategory] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
@@ -583,12 +584,12 @@ export default function App() {
     <div className="min-h-screen scroll-smooth" style={{ background: COLOR.bg, fontFamily: "'Space Grotesk', sans-serif" }}>
       <header className="sticky top-0 z-10 backdrop-blur-md" style={{ background: "rgba(239,233,251,0.9)", borderBottom: "2px solid #DDD4F0" }}>
         <div className="max-w-5xl mx-auto px-5 py-4 flex items-center gap-6">
-          <div className="flex items-center gap-2">
+          <button className="flex items-center gap-2" onClick={() => { setView("landing"); setActiveMarket(null); }}>
             <div className="w-6 h-6 rounded-full" style={{ background: `linear-gradient(135deg, ${COLOR.mint}, ${COLOR.cyan})`, border: `2px solid ${COLOR.border}` }} />
             <span className="font-semibold tracking-tight" style={{ color: COLOR.navy }}>Verdict</span>
-          </div>
+          </button>
           <nav className="hidden md:flex items-center gap-1 ml-2">
-            {[{ id: "feed", label: "Feed" }, { id: "leaderboard", label: "Leaderboard" }, { id: "profile", label: "Profile" }].map((n) => (
+            {view !== "landing" && [{ id: "feed", label: "Feed" }, { id: "leaderboard", label: "Leaderboard" }, { id: "profile", label: "Profile" }].map((n) => (
               <button key={n.id} onClick={() => { setView(n.id); setActiveMarket(null); }} className="px-3 py-1.5 rounded-full text-[13px] transition-colors"
                 style={{ background: view === n.id ? "#E3DEF2" : "transparent", color: view === n.id ? COLOR.navy : COLOR.muted }}>
                 {n.label}
@@ -596,7 +597,7 @@ export default function App() {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-3">
-            {wallet.connected && (
+            {wallet.connected && view !== "landing" && (
               <button onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px]" style={{ border: `2px solid ${COLOR.border}`, color: COLOR.navy }}>
                 <Plus size={14} /> New market
               </button>
@@ -607,6 +608,14 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-5 py-8 pb-24">
+        {view === "landing" && (
+          <Landing
+            markets={markets}
+            wallet={wallet}
+            onEnterApp={() => setView("feed")}
+            onConnectWallet={() => connectWallet({ onFinish: () => handleConnected(getUserAddress()), onCancel: () => {} })}
+          />
+        )}
         {view === "feed" && !activeMarket && (
           <>
             <div className="flex items-center gap-2 mb-6 overflow-x-auto pb-1">
@@ -638,13 +647,15 @@ export default function App() {
         {view === "profile" && !activeMarket && <Profile wallet={wallet} bets={bets} markets={markets} />}
       </main>
 
-      <nav className="md:hidden fixed bottom-0 inset-x-0 backdrop-blur-md flex justify-around py-2.5 z-10" style={{ background: "rgba(239,233,251,0.95)", borderTop: "2px solid #DDD4F0" }}>
-        {[{ id: "feed", label: "Feed", icon: Search }, { id: "leaderboard", label: "Ranks", icon: Trophy }, { id: "profile", label: "You", icon: User }].map((n) => (
-          <button key={n.id} onClick={() => { setView(n.id); setActiveMarket(null); }} className="flex flex-col items-center gap-0.5 text-[11px]" style={{ color: view === n.id ? "#2F9E8F" : COLOR.muted }}>
-            <n.icon size={18} />{n.label}
-          </button>
-        ))}
-      </nav>
+      {view !== "landing" && (
+        <nav className="md:hidden fixed bottom-0 inset-x-0 backdrop-blur-md flex justify-around py-2.5 z-10" style={{ background: "rgba(239,233,251,0.95)", borderTop: "2px solid #DDD4F0" }}>
+          {[{ id: "feed", label: "Feed", icon: Search }, { id: "leaderboard", label: "Ranks", icon: Trophy }, { id: "profile", label: "You", icon: User }].map((n) => (
+            <button key={n.id} onClick={() => { setView(n.id); setActiveMarket(null); }} className="flex flex-col items-center gap-0.5 text-[11px]" style={{ color: view === n.id ? "#2F9E8F" : COLOR.muted }}>
+              <n.icon size={18} />{n.label}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {showCreate && <MarketFormModal mode="create" onClose={() => setShowCreate(false)} onSubmit={createMarket} />}
       {editingMarket && (
