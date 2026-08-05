@@ -66,10 +66,12 @@ function loadDb() {
     ],
     bets: [],
     disputes: [],
+    subscribers: [],
   };
 }
 
 const db = loadDb();
+db.subscribers = db.subscribers || [];
 
 function saveDb() {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
@@ -288,6 +290,23 @@ app.get("/api/leaderboard", (req, res) => {
     .sort((a, b) => b.winRate - a.winRate);
 
   res.json(leaderboard);
+});
+
+/* ---------------------------------------------------------
+   Email signup
+--------------------------------------------------------- */
+
+app.post("/api/subscribe", (req, res) => {
+  const { email } = req.body;
+  const valid = typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  if (!valid) return res.status(400).json({ error: "a valid email is required" });
+
+  const already = db.subscribers.some((s) => s.email.toLowerCase() === email.toLowerCase());
+  if (!already) {
+    db.subscribers.push({ email, subscribedAt: new Date().toISOString() });
+    saveDb();
+  }
+  res.status(201).json({ ok: true });
 });
 
 const PORT = process.env.PORT || 3001;
