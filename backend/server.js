@@ -1,178 +1,163 @@
 /**
- * Verdict backend, minimal Express API.
+ * Verdict backend, now backed by Supabase Postgres instead of a
+ * local file. This is the actual fix for markets disappearing,
+ * data written here survives redeploys and spin downs, since it
+ * lives in a real database, not the container's disk.
  *
- * This handles everything that should not live on chain: market
- * metadata, feed ranking, comments, notifications, and the admin
- * resolution queue described in the MVP plan. Bet settlement itself
- * happens in the Clarity contracts; this server just mirrors chain
- * state for fast reads and holds the off chain social layer.
+ * Requires two environment variables set on Render:
+ *   SUPABASE_URL       your project URL
+ *   SUPABASE_ANON_KEY   your project's anon public key
  *
- * Swap the in memory arrays for real Supabase calls once you wire
- * up a project. The route shapes below match the schema in
- * schema.sql, so the swap should be mechanical.
+ * The API shape returned to the frontend is unchanged from the
+ * old file backed version, camelCase fields like yesPool and
+ * creatorAddress, so nothing in App.jsx needs to change.
  */
 
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// File backed store. This survives normal restarts of a long running
-// process, but Render's free tier wipes the disk on redeploys and on
-// the periodic spin down that happens after inactivity. Treat this as
-// a bridge, not a real answer, swap it for Supabase calls (see
-// schema.sql) once you want data that survives a redeploy for sure.
-const DB_FILE = path.join(__dirname, "db.json");
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+  console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY environment variables.");
+}
 
-function loadDb() {
-  if (fs.existsSync(DB_FILE)) {
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
-  }
-  // Seed data so the feed isn't empty on a fresh deploy.
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+
+/* ---------------------------------------------------------
+   Mapping helpers. The database uses snake_case columns,
+   the API keeps the camelCase shape the frontend already
+   expects, so nothing downstream has to change.
+--------------------------------------------------------- */
+function toMarketJson(row) {
   return {
-    markets: [
-      {
-        id: "m_seed_1",
-        title: "Will I eat this night",
-        rule: "Resolves YES if the creator posts proof of a meal before midnight in their timezone.",
-        category: "Friends",
-        closes: "2026-08-07T23:59:00",
-        creatorAddress: "SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR",
-        status: "open",
-        yesPool: 10,
-        noPool: 35,
-        participants: 2,
-        createdAt: new Date().toISOString(),
-        onChainTxId: null,
-      },
-      {
-        id: "m_seed_2",
-        title: "Do Tolu and Kemzy make it past their anniversary post?",
-        rule: "Resolves YES if both accounts remain mutually following and no breakup statement is posted by either party before the close date.",
-        category: "Influencers",
-        closes: "2026-08-14T00:00:00",
-        creatorAddress: "SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKQ9H6DPR",
-        status: "open",
-        yesPool: 4820,
-        noPool: 3110,
-        participants: 214,
-        createdAt: new Date().toISOString(),
-        onChainTxId: null,
-      },
-    ],
-    bets: [],
-    disputes: [],
-    subscribers: [],
+    id: row.id,
+    title: row.title,
+    rule: row.rule,
+    category: row.category,
+    closes: row.closes,
+    creatorAddress: row.creator_address,
+    status: row.status,
+    outcome: row.outcome,
+    yesPool: row.yes_pool,
+    noPool: row.no_pool,
+    participants: row.participants,
+    onChainTxId: row.on_chain_tx_id,
+    resolvedBy: row.resolved_by,
+    evidenceUrl: row.evidence_url,
+    resolvedAt: row.resolved_at,
+    disputeWindowCloses: row.dispute_window_closes,
+    createdAt: row.created_at,
   };
 }
 
-const db = loadDb();
-db.subscribers = db.subscribers || [];
-
-function saveDb() {
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+function toBetJson(row) {
+  return {
+    id: row.id,
+    marketId: row.market_id,
+    side: row.side,
+    amount: row.amount,
+    bettorAddress: row.bettor_address,
+    txId: row.tx_id,
+    createdAt: row.created_at,
+  };
 }
 
 /* ---------------------------------------------------------
    Markets
 --------------------------------------------------------- */
 
-// List markets, optionally filtered by category.
-app.get("/api/markets", (req, res) => {
+app.get("/api/markets", async (req, res) => {
   const { category } = req.query;
-  const results = category && category !== "All"
-    ? db.markets.filter((m) => m.category === category)
-    : db.markets;
-  res.json(results);
+  let query = supabase.from("markets").select("*").order("created_at", { ascending: false });
+  if (category && category !== "All") query = query.eq("category", category);
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data.map(toMarketJson));
 });
 
-// Create a market. Real deployments should also call the
-// market-factory contract here and store the returned tx id.
-app.post("/api/markets", (req, res) => {
+app.post("/api/markets", async (req, res) => {
   const { title, rule, category, closes, creatorAddress } = req.body;
   if (!title || !closes || !creatorAddress) {
     return res.status(400).json({ error: "title, closes, and creatorAddress are required" });
   }
+
   const market = {
     id: `m_${Date.now()}`,
     title,
     rule: rule || "",
     category: category || "Friends",
     closes,
-    creatorAddress,
+    creator_address: creatorAddress,
     status: "open",
-    yesPool: 0,
-    noPool: 0,
+    yes_pool: 0,
+    no_pool: 0,
     participants: 0,
-    createdAt: new Date().toISOString(),
-    onChainTxId: null, // fill in once the factory contract call confirms
   };
-  db.markets.push(market);
-  saveDb();
-  res.status(201).json(market);
+
+  const { data, error } = await supabase.from("markets").insert(market).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json(toMarketJson(data));
 });
 
-// Fetch one market with its bet history.
-app.get("/api/markets/:id", (req, res) => {
-  const market = db.markets.find((m) => m.id === req.params.id);
-  if (!market) return res.status(404).json({ error: "market not found" });
-  const marketBets = db.bets.filter((b) => b.marketId === market.id);
-  res.json({ ...market, bets: marketBets });
+app.get("/api/markets/:id", async (req, res) => {
+  const { data: market, error } = await supabase.from("markets").select("*").eq("id", req.params.id).single();
+  if (error || !market) return res.status(404).json({ error: "market not found" });
+
+  const { data: bets } = await supabase.from("bets").select("*").eq("market_id", market.id);
+  res.json({ ...toMarketJson(market), bets: (bets || []).map(toBetJson) });
 });
 
-// Edit a market. Only the original creator can edit, and only
-// while the market is still open, editing a market that already
-// has bets against it would be unfair to whoever already staked.
-app.patch("/api/markets/:id", (req, res) => {
-  const market = db.markets.find((m) => m.id === req.params.id);
-  if (!market) return res.status(404).json({ error: "market not found" });
+app.patch("/api/markets/:id", async (req, res) => {
+  const { data: market, error: fetchErr } = await supabase.from("markets").select("*").eq("id", req.params.id).single();
+  if (fetchErr || !market) return res.status(404).json({ error: "market not found" });
 
   const { editorAddress, title, rule, category, closes } = req.body;
   if (!editorAddress) return res.status(400).json({ error: "editorAddress is required" });
-  if (editorAddress !== market.creatorAddress) {
+  if (editorAddress !== market.creator_address) {
     return res.status(403).json({ error: "only the creator can edit this market" });
   }
   if (market.status !== "open") {
     return res.status(400).json({ error: "only an open market can be edited" });
   }
-  const hasBets = db.bets.some((b) => b.marketId === market.id);
-  if (hasBets) {
+
+  const { count } = await supabase.from("bets").select("id", { count: "exact", head: true }).eq("market_id", market.id);
+  if (count > 0) {
     return res.status(400).json({ error: "this market already has bets against it and can no longer be edited" });
   }
 
-  if (title) market.title = title;
-  if (rule !== undefined) market.rule = rule;
-  if (category) market.category = category;
-  if (closes) market.closes = closes;
+  const updates = {};
+  if (title) updates.title = title;
+  if (rule !== undefined) updates.rule = rule;
+  if (category) updates.category = category;
+  if (closes) updates.closes = closes;
 
-  saveDb();
-  res.json(market);
+  const { data, error } = await supabase.from("markets").update(updates).eq("id", market.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(toMarketJson(data));
 });
 
-// Delete a market. Same guard rails as editing: creator only,
-// and only before anyone has staked on it. Once bets exist the
-// market should be cancelled through resolution instead, so
-// stakers get their funds back rather than the market vanishing.
-app.delete("/api/markets/:id", (req, res) => {
-  const market = db.markets.find((m) => m.id === req.params.id);
-  if (!market) return res.status(404).json({ error: "market not found" });
+app.delete("/api/markets/:id", async (req, res) => {
+  const { data: market, error: fetchErr } = await supabase.from("markets").select("*").eq("id", req.params.id).single();
+  if (fetchErr || !market) return res.status(404).json({ error: "market not found" });
 
   const { editorAddress } = req.body;
   if (!editorAddress) return res.status(400).json({ error: "editorAddress is required" });
-  if (editorAddress !== market.creatorAddress) {
+  if (editorAddress !== market.creator_address) {
     return res.status(403).json({ error: "only the creator can delete this market" });
   }
-  const hasBets = db.bets.some((b) => b.marketId === market.id);
-  if (hasBets) {
+
+  const { count } = await supabase.from("bets").select("id", { count: "exact", head: true }).eq("market_id", market.id);
+  if (count > 0) {
     return res.status(400).json({ error: "this market already has bets against it, cancel it instead of deleting" });
   }
 
-  db.markets = db.markets.filter((m) => m.id !== market.id);
-  saveDb();
+  const { error } = await supabase.from("markets").delete().eq("id", market.id);
+  if (error) return res.status(500).json({ error: error.message });
   res.status(204).send();
 });
 
@@ -180,13 +165,9 @@ app.delete("/api/markets/:id", (req, res) => {
    Bets
 --------------------------------------------------------- */
 
-// Record a bet after the on chain transaction confirms.
-// The frontend should call the Clarity contract directly with
-// Stacks.js, wait for confirmation, then hit this endpoint with
-// the resulting txId so the feed and pools update.
-app.post("/api/markets/:id/bets", (req, res) => {
-  const market = db.markets.find((m) => m.id === req.params.id);
-  if (!market) return res.status(404).json({ error: "market not found" });
+app.post("/api/markets/:id/bets", async (req, res) => {
+  const { data: market, error: fetchErr } = await supabase.from("markets").select("*").eq("id", req.params.id).single();
+  if (fetchErr || !market) return res.status(404).json({ error: "market not found" });
   if (market.status !== "open") return res.status(400).json({ error: "market is closed" });
 
   const { side, amount, bettorAddress, txId } = req.body;
@@ -194,74 +175,69 @@ app.post("/api/markets/:id/bets", (req, res) => {
     return res.status(400).json({ error: "side, amount, bettorAddress, and txId are required" });
   }
 
-  const bet = {
-    id: `b_${Date.now()}`,
-    marketId: market.id,
-    side,
-    amount,
-    bettorAddress,
-    txId,
-    createdAt: new Date().toISOString(),
+  const { data: bet, error: betErr } = await supabase
+    .from("bets")
+    .insert({ id: `b_${Date.now()}`, market_id: market.id, side, amount, bettor_address: bettorAddress, tx_id: txId })
+    .select()
+    .single();
+  if (betErr) return res.status(500).json({ error: betErr.message });
+
+  // Read-then-write pool update. Fine at this scale, worth
+  // moving to a Postgres function with an atomic increment if
+  // concurrent bets on the same market ever become common.
+  const updates = {
+    participants: market.participants + 1,
+    ...(side === "yes" ? { yes_pool: market.yes_pool + amount } : { no_pool: market.no_pool + amount }),
   };
-  db.bets.push(bet);
+  await supabase.from("markets").update(updates).eq("id", market.id);
 
-  if (side === "yes") market.yesPool += amount;
-  else market.noPool += amount;
-  market.participants += 1;
-
-  saveDb();
-  res.status(201).json(bet);
+  res.status(201).json(toBetJson(bet));
 });
 
 /* ---------------------------------------------------------
    Resolution and disputes
 --------------------------------------------------------- */
 
-// Admin resolves a market. In production, gate this behind an
-// auth check that confirms the caller is on the trusted resolver
-// list, then submit the outcome to the resolution contract before
-// writing it here.
-app.post("/api/markets/:id/resolve", (req, res) => {
-  const market = db.markets.find((m) => m.id === req.params.id);
-  if (!market) return res.status(404).json({ error: "market not found" });
+app.post("/api/markets/:id/resolve", async (req, res) => {
+  const { data: market, error: fetchErr } = await supabase.from("markets").select("*").eq("id", req.params.id).single();
+  if (fetchErr || !market) return res.status(404).json({ error: "market not found" });
 
   const { outcome, resolverAddress, evidenceUrl } = req.body;
   if (!["yes", "no"].includes(outcome) || !resolverAddress) {
     return res.status(400).json({ error: "outcome and resolverAddress are required" });
   }
 
-  market.status = "resolved";
-  market.outcome = outcome;
-  market.resolvedBy = resolverAddress;
-  market.evidenceUrl = evidenceUrl || null;
-  market.resolvedAt = new Date().toISOString();
-  market.disputeWindowCloses = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString();
+  const updates = {
+    status: "resolved",
+    outcome,
+    resolved_by: resolverAddress,
+    evidence_url: evidenceUrl || null,
+    resolved_at: new Date().toISOString(),
+    dispute_window_closes: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(),
+  };
 
-  saveDb();
-  res.json(market);
+  const { data, error } = await supabase.from("markets").update(updates).eq("id", market.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(toMarketJson(data));
 });
 
-// A user disputes a resolution within the window.
-app.post("/api/markets/:id/dispute", (req, res) => {
-  const market = db.markets.find((m) => m.id === req.params.id);
-  if (!market) return res.status(404).json({ error: "market not found" });
+app.post("/api/markets/:id/dispute", async (req, res) => {
+  const { data: market, error: fetchErr } = await supabase.from("markets").select("*").eq("id", req.params.id).single();
+  if (fetchErr || !market) return res.status(404).json({ error: "market not found" });
   if (market.status !== "resolved") return res.status(400).json({ error: "market has no resolution to dispute" });
-  if (new Date() > new Date(market.disputeWindowCloses)) {
+  if (new Date() > new Date(market.dispute_window_closes)) {
     return res.status(400).json({ error: "dispute window has closed" });
   }
 
   const { disputerAddress, reason } = req.body;
-  const dispute = {
-    id: `d_${Date.now()}`,
-    marketId: market.id,
-    disputerAddress,
-    reason,
-    createdAt: new Date().toISOString(),
-  };
-  db.disputes.push(dispute);
-  market.status = "disputed";
+  const { data: dispute, error } = await supabase
+    .from("disputes")
+    .insert({ id: `d_${Date.now()}`, market_id: market.id, disputer_address: disputerAddress, reason })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
 
-  saveDb();
+  await supabase.from("markets").update({ status: "disputed" }).eq("id", market.id);
   res.status(201).json(dispute);
 });
 
@@ -269,18 +245,23 @@ app.post("/api/markets/:id/dispute", (req, res) => {
    Leaderboard
 --------------------------------------------------------- */
 
-app.get("/api/leaderboard", (req, res) => {
+app.get("/api/leaderboard", async (req, res) => {
+  const { data: resolvedMarkets } = await supabase.from("markets").select("id, outcome").eq("status", "resolved");
+  const { data: bets } = await supabase.from("bets").select("bettor_address, side, amount, market_id");
+
   const totals = {};
-  for (const bet of db.bets) {
-    totals[bet.bettorAddress] = totals[bet.bettorAddress] || { volume: 0, wins: 0, total: 0 };
-    totals[bet.bettorAddress].volume += bet.amount;
+  for (const bet of bets || []) {
+    totals[bet.bettor_address] = totals[bet.bettor_address] || { volume: 0, wins: 0, total: 0 };
+    totals[bet.bettor_address].volume += bet.amount;
   }
-  for (const market of db.markets.filter((m) => m.status === "resolved")) {
-    for (const bet of db.bets.filter((b) => b.marketId === market.id)) {
-      totals[bet.bettorAddress].total += 1;
-      if (bet.side === market.outcome) totals[bet.bettorAddress].wins += 1;
-    }
+  const outcomeByMarket = Object.fromEntries((resolvedMarkets || []).map((m) => [m.id, m.outcome]));
+  for (const bet of bets || []) {
+    const outcome = outcomeByMarket[bet.market_id];
+    if (!outcome) continue;
+    totals[bet.bettor_address].total += 1;
+    if (bet.side === outcome) totals[bet.bettor_address].wins += 1;
   }
+
   const leaderboard = Object.entries(totals)
     .map(([address, stats]) => ({
       address,
@@ -296,16 +277,13 @@ app.get("/api/leaderboard", (req, res) => {
    Email signup
 --------------------------------------------------------- */
 
-app.post("/api/subscribe", (req, res) => {
+app.post("/api/subscribe", async (req, res) => {
   const { email } = req.body;
   const valid = typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   if (!valid) return res.status(400).json({ error: "a valid email is required" });
 
-  const already = db.subscribers.some((s) => s.email.toLowerCase() === email.toLowerCase());
-  if (!already) {
-    db.subscribers.push({ email, subscribedAt: new Date().toISOString() });
-    saveDb();
-  }
+  const { error } = await supabase.from("subscribers").upsert({ email }, { onConflict: "email" });
+  if (error) return res.status(500).json({ error: error.message });
   res.status(201).json({ ok: true });
 });
 
