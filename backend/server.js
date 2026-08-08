@@ -27,6 +27,15 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
+// The markets, bets, and disputes tables all have a foreign key
+// pointing at users(address). Nothing else in this app creates a
+// user row on its own, so every insert that references a wallet
+// address needs to make sure that address exists first.
+async function ensureUser(address) {
+  if (!address) return;
+  await supabase.from("users").upsert({ address }, { onConflict: "address", ignoreDuplicates: true });
+}
+
 /* ---------------------------------------------------------
    Mapping helpers. The database uses snake_case columns,
    the API keeps the camelCase shape the frontend already
@@ -85,6 +94,8 @@ app.post("/api/markets", async (req, res) => {
   if (!title || !closes || !creatorAddress) {
     return res.status(400).json({ error: "title, closes, and creatorAddress are required" });
   }
+
+  await ensureUser(creatorAddress);
 
   const market = {
     id: `m_${Date.now()}`,
@@ -175,6 +186,8 @@ app.post("/api/markets/:id/bets", async (req, res) => {
     return res.status(400).json({ error: "side, amount, bettorAddress, and txId are required" });
   }
 
+  await ensureUser(bettorAddress);
+
   const { data: bet, error: betErr } = await supabase
     .from("bets")
     .insert({ id: `b_${Date.now()}`, market_id: market.id, side, amount, bettor_address: bettorAddress, tx_id: txId })
@@ -207,6 +220,8 @@ app.post("/api/markets/:id/resolve", async (req, res) => {
     return res.status(400).json({ error: "outcome and resolverAddress are required" });
   }
 
+  await ensureUser(resolverAddress);
+
   const updates = {
     status: "resolved",
     outcome,
@@ -230,6 +245,8 @@ app.post("/api/markets/:id/dispute", async (req, res) => {
   }
 
   const { disputerAddress, reason } = req.body;
+  await ensureUser(disputerAddress);
+
   const { data: dispute, error } = await supabase
     .from("disputes")
     .insert({ id: `d_${Date.now()}`, market_id: market.id, disputer_address: disputerAddress, reason })
